@@ -1,11 +1,12 @@
-1) Data Visualization: Gas Prices
-=================================
+1 Data Visualization: Gas Prices
+================================
 
 In this exercise, we will be examining data from 101 gas stations in the
 Austin area from 2016. Some simple plots will be assembled to determine
 general trends about the data with human observations.
 
-### A) Theory: Gas stations charge more if they lack direct competition in sight (boxplot).
+A) Theory: Gas stations charge more if they lack direct competition in sight (boxplot).
+---------------------------------------------------------------------------------------
 
     ggplot(data = data1) + 
       geom_boxplot(mapping=aes(x=Competitors,y=Price)) + 
@@ -20,7 +21,8 @@ drawing conclusions based on this plot alone, it would not be
 unreasonable to state that it appears that gas station without
 competitors nearby charge higher prices.
 
-### B) Theory: Gas stations charge more if they lack direct competition in sight (boxplot).
+B) Theory: Gas stations charge more if they lack direct competition in sight (boxplot).
+---------------------------------------------------------------------------------------
 
     ggplot(data = data1) + 
       geom_point(mapping=aes(x=Income,y=Price)) + 
@@ -32,13 +34,12 @@ prices.](ECO395M_Exercise1_files/figure-markdown_strict/unnamed-chunk-1-1.png)
 From this scatter plot, there does seem to be positive, albeit weak,
 relation between the income and price when examining just by eye.
 
-### C) Theory: Shell charges more than other brands (bar plot).
+C) Theory: Shell charges more than other brands (bar plot).
+-----------------------------------------------------------
 
     ggplot(data = data1) +
       geom_bar(mapping = aes(x=Brand,y=Price),stat='summary') +
       labs(title='Average Price of Each Competitor',y='Price (USD)')
-
-    ## No summary function supplied, defaulting to `mean_se()`
 
 ![Figure 2: Bar plot of the average prices for each
 brand.](ECO395M_Exercise1_files/figure-markdown_strict/unnamed-chunk-2-1.png)
@@ -47,7 +48,8 @@ between all the different brands by examination of the plot; so, we
 conclude (quite skeptically) that Shell does not charge more than the
 other brands.
 
-### D) Theory: Gas stations at stoplights charge more (faceted histogram).
+D) Theory: Gas stations at stoplights charge more (faceted histogram).
+----------------------------------------------------------------------
 
     ggplot(data = data1) + 
       geom_histogram(mapping=aes(x=Price,y=stat(count)/sum(stat(count))),binwidth = 0.05) +
@@ -61,7 +63,8 @@ From examination of the two histogram plots, it can be seen that there
 is a larger density of gas stations with a higher price near a
 stoplight.
 
-### E) Theory: Gas stations with direct highway access charge more.
+E) Theory: Gas stations with direct highway access charge more.
+---------------------------------------------------------------
 
     ggplot(data = data1) +
       geom_boxplot(mapping=aes(x=Highway,y=Price)) +
@@ -73,8 +76,8 @@ nearby](ECO395M_Exercise1_files/figure-markdown_strict/unnamed-chunk-4-1.png)
 After examining both boxplots, the conclusion can be drawn that the gas
 stations near highway exits have higher prices.
 
-2) Data Visualization: a bike share network
-===========================================
+2 Data Visualization: a bike share network
+==========================================
 
 Similar to the last exercise, we will again employ data visualization to
 draw conclusions about the trends of a data set. The data set of concern
@@ -82,7 +85,8 @@ for this exercise is from a bike-sharing rental system; it has been
 aggregated on daily and hourly basis then combined with weather
 information.
 
-### Plot A:
+Plot A:
+-------
 
     data2_avg <- data2 %>% 
                   group_by(hr) %>%
@@ -96,14 +100,12 @@ day](ECO395M_Exercise1_files/figure-markdown_strict/unnamed-chunk-5-1.png)
 From examination of this plot, it can be seen that ridership spikes at
 around hour 8 and hour 17.
 
-### Plot B:
+Plot B:
+-------
 
     data2_avg_wkday <- data2 %>%
                         group_by(hr,workingday) %>%
                         summarize(avg = mean(total))
-
-    ## `summarise()` has grouped output by 'hr'. You can override using the `.groups` argument.
-
     ggplot(data = data2_avg_wkday) + 
       geom_line(mapping=aes(x=hr,y=avg)) + 
       labs(title = 'Avg Bike Rentals Over Hour of the Day',x='Hour of the Day',y='Avg Number of Sales') +
@@ -118,15 +120,13 @@ declines back down in the evening. However, in contrast, during working
 days there are two distinct spikes which seem to be in the morning and
 even which align with typical working hours.
 
-### Plot C:
+Plot C:
+-------
 
     data2_avg_wkday_8am <- data2 %>%
                             filter(hr==8) %>%
                             group_by(weathersit,workingday) %>%
                             summarize(avg = mean(total))
-
-    ## `summarise()` has grouped output by 'weathersit'. You can override using the `.groups` argument.
-
     ggplot(data = data2_avg_wkday_8am) +
       geom_bar(mapping=aes(x=weathersit,y=avg),stat='identity') +
       facet_wrap(~workingday,labeller=labeller(workingday=c('0'='Not Working Day','1'='Working Day'))) +
@@ -143,8 +143,8 @@ This plot shows that the average rentals at 8 AM are higher on
 non-working days and theres a somewhat downward trend as weather
 situation codes increases which signifies increasingly worse weather.
 
-3) Data Visualiszation: Flights at ABIA
-=======================================
+3 Data Visualiszation: Flights at ABIA
+======================================
 
 Like before, in this exercise data visualization will be the at the
 forefront; we use a heat map to determine generally when may be good to
@@ -158,16 +158,10 @@ went through Austin-Bergstrom Internation Airport.
 
     #data processing
     data3_post <- data3 %>% 
-                    mutate(delay = convert(DepTime)-convert(CRSDepTime),ldelay = log(convert(DepTime)-convert(CRSDepTime)),DepTime_hr = convert(DepTime)/60) %>% 
+                    mutate(delay = convert(DepTime)-convert(CRSDepTime),DepTime_hr = convert(DepTime)/60) %>% 
                     filter(delay > 0) %>%
                     group_by(DayofMonth,Month) %>%
                     summarise(DepTime_hr=DepTime_hr,mean_delay=mean(delay))
-
-    ## Warning: Problem with `mutate()` input `ldelay`.
-    ## i NaNs produced
-    ## i Input `ldelay` is `log(convert(DepTime) - convert(CRSDepTime))`.
-
-    ## `summarise()` has grouped output by 'DayofMonth', 'Month'. You can override using the `.groups` argument.
 
     #plot
     ggplot(data=data3_post) +
@@ -182,8 +176,8 @@ From this plot, we can see that for the most part delays are fairly
 uniform. However, there seems to be less delays towards the end of the
 year and beginning of the month.
 
-4) K-Nearest Neighbors
-======================
+4 K-Nearest Neighbors
+=====================
 
 The data set of interest is information on over 29,000 Mercedes S Class
 vehicles (which have a great deal of subclassses). Specifically, we are
@@ -193,7 +187,8 @@ level sub-model categories 350 and 65 AMG, subsetting the data for each,
 in order to eliminate specifics of each model that may affect price if
 we were to aggregate them.
 
-### Part 1: Split the data into training and testing set
+Part 1: Split the data into training and testing set
+----------------------------------------------------
 
 We begin by building two subsets of our original data; one for trim
 level 350 and one for 65 AMG. Then each of these subsets are split into
@@ -219,7 +214,8 @@ training set will be roughly 80% of the initial subset and the remaining
     data4_trim65_train <- data4_trim65[sample_trim65, ]
     data4_trim65_test  <- data4_trim65[-sample_trim65, ]
 
-### Part 2: Run K-nearest neighbors
+Part 2: Run K-nearest neighbors
+-------------------------------
 
 Here the K-nearest neighbor (K-nn) algorithm is written for use. The way
 it is written here will take a new (testing) set to output the
@@ -250,7 +246,8 @@ each point individually to perform the prediction.
       return(y_new)
     }
 
-### Part 3:
+Part 3:
+-------
 
 Now we run the K-nn function while varying the K parameter from 2 to
 100. While going out to 100 is likely unnecessary, we do so to be able
@@ -274,7 +271,8 @@ dip then gradually increases again.
       rmse_kdata_trim65[i] <- rmse(data4_trim65_test[,'price'],knn(data4_trim65_train,i,data4_trim65_test[,'mileage'],mileage,price))
     }
 
-### Out-of-Sample RMSE Plots
+Out-of-Sample RMSE Plots
+------------------------
 
     ggplot(data = data.frame(k_values,rmse_kdata=c(rmse_kdata_trim350,rmse_kdata_trim65),trim350or65AMG=c(rep(350,length(rmse_kdata_trim350)),rep(65,length(rmse_kdata_trim65))))) +
       geom_point(mapping=aes(x=k_values,y=rmse_kdata)) +
@@ -283,7 +281,8 @@ dip then gradually increases again.
 
 ![](ECO395M_Exercise1_files/figure-markdown_strict/unnamed-chunk-12-1.png)
 
-### "Optimal" K Plots
+"Optimal" K Plots
+-----------------
 
 The "dip" is where we will determine our "optimal" K for K-nn to be.
 However, due to the random procedure in procuring the training and
