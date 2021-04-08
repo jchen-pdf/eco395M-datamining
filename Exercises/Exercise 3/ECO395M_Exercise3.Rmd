@@ -1,0 +1,235 @@
+---
+title: "ECO 395M Exercise 3"
+author: "Jun-Yuan Chen"
+date: "April 9, 2021"
+output: md_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(ggplot2)
+library(modelr)
+library(caret)
+library(MASS)
+library(foreach)
+library(glmnet)
+library(ggmap)
+library(foreach)
+library(dplyr)
+library(viridis)
+library(randomForest)
+library(modelr)
+
+```
+
+# 1 What causes what?
+1. There could many many different causes that can cause correlation between crime and police presence that may not necessarily be directly from police presence. It could be that increasing police presence required more funding that was taken out of homeless shelters, which could drive up crime rate.
+
+2. Researchers for Upenn were able to isolate the effect of police presence on crime rate by taking advantage of a specific protocol within Washington DC's police department; this protocol increases police presence by adding more officers on the streets when there is a high terrorist threat level as Washington DC is the nation's capitol. This protocol allows the treatment of increased police presence without perturbing the rest of the system too much.
+In the table, it can be seen that the coefficent of the dummy variable for High Alert is significant at the 5% level, showing that there is indeed a negative effect (for Washington DC). They also control for drop in METRO ridership to account for the possibility that with a terrorist alert people may not be outside (so less victims for crime). In the models with and without this control, both show a significant negative coefficent for police presence on crime rate. 
+
+3. They controlled for METRO ridership as an indicator variable of people being outside and still operating as normal. This is because if the number of people were to drop it may result in a drop in crime rate as they would be less potential victims.
+
+
+4. The model here is estimating the interaction effect between the High Alert variable and dummy on first police district on the crime rate. The conclusion for this model is that there is a heterogenous effect of High Alert on crime rate in different districts; the effect is statistically signficant for district 1 but not for the other ones. 
+
+# 2 Predictive model building: green certification
+## Overview
+We will be building a predictive model for revenue per square foot per calendar year to quantify on average the affect of green certification (either LEED or Energystar). The data employed to build this model is on 7,894 commercial rental properties from across the United States with about 9% of them having a green certification. 
+## Data and Model
+The data set is processed by adding a column for the outcome variable, yearly revenue per square foot, which is the rent per square foot times the leasing rate. Then these two variables are removed from the set of predictors as they would be highly correlated with the outcome variable. 
+
+```{r data processing, echo=FALSE, results=FALSE}
+#load data
+data2 <- read.table('../data/greenbuildings.csv',header=TRUE,sep=',')
+
+#features
+data2 <- data2 %>% 
+  mutate(yearly_sqft_revenue = Rent*leasing_rate) #add the outcome variable of interest
+data2 <- data2 %>%
+  mutate(Rent=NULL,leasing_rate=NULL)
+
+#remove NA
+data2 <- data2[complete.cases(data2),]
+```
+
+There is a choice to use LEED and Energystar indicators or the green rating indicator to analysis the affect of having these labels. With keeping LEED and Energystar, it will allow the model to differentiate between the two and therefore estimate the affects of each seperately and we can use an interaction between them to ensure that for buildings with both do not impact the ones with only one too much. Conversely, if it is believed that the affect from both (together as well) is the same then using only green rating becomes much more appealing as we reduce the features by one and it becomes easier to interpret only one effect. 
+
+```{r create data sets for green rating labels and CV folds, echo=FALSE, results=FALSE}
+#make two data sets: one with green and the other with LEED/ES
+data2.green <- data2 %>%
+  mutate(LEED = NULL, Energystar = NULL)
+data2.LEED_ES <- data2 %>%
+  mutate(green_rating = NULL)
+
+#fold the data
+kfolds = 10
+data2.green <- data2.green %>%
+  mutate(fold_id = rep(1:kfolds, length=nrow(data2.green)) %>% sample)
+data2.LEED_ES <- data2.LEED_ES %>%
+  mutate(fold_id = rep(1:kfolds, length=nrow(data2.LEED_ES)) %>% sample)
+```
+
+The two models with high predictive capabilities and low upfront cost are K-NN and random forest. However, both are more useful for out-of-sample predictions on the specified outcome variable. Here, the foremost concern is the affect a particular covariate has on the outcome variable. Thus, a model with high interpretability is require and regressions will seem to fit that criteria well. So, we will use lasso regression as it will also do automatic feature selection and allow the estimation the importance of the green ratings.  
+
+```{r lasso regressions, echo=FALSE, results=FALSE}
+#lasso (green)
+green.lasso <- cv.glmnet(x=model.matrix(yearly_sqft_revenue~.,subset(data2.green,select=-c(fold_id))),
+                         y=data2.green$yearly_sqft_revenue,nfolds=5,family="gaussian",verb=TRUE)
+coef(green.lasso)
+green.lasso
+
+#lasso (LEED/ES)
+LEED_ES.lasso <- cv.glmnet(x=model.matrix(yearly_sqft_revenue~.+LEED*Energystar,
+                                          subset(data2.LEED_ES,select=-c(fold_id))),
+                           y=data2.LEED_ES$yearly_sqft_revenue,nfolds=5,family="gaussian",verb=TRUE)
+coef(LEED_ES.lasso)
+LEED_ES.lasso
+
+#lasso (both)
+both.lasso <- cv.glmnet(x=model.matrix(yearly_sqft_revenue~.,data2),
+                        y=data2$yearly_sqft_revenue,nfolds=5,family="gaussian",verb=TRUE)
+coef(both.lasso)
+both.lasso
+```
+
+```{r lasso plots, echo=FALSE}
+plot(green.lasso)
+plot(LEED_ES.lasso)
+plot(both.lasso)
+```
+From all three variations of the lasso regression, it can be seen that none of the green rating labels were selected. This indicates that the they are likely not heavily important in predicting the outcomes variable. However, since the green rating labels are the variables of interest, they will need to be in the regression. So, instead we will use a less feature punishing method (this can also be achieved by decreasing lambda in lasso). Step-wise AIC can help with this feature selection and increasing out-of-sample RMSE without exluding the green rating labels. 
+
+```{r stepwise AIC, echo=FALSE, results=FALSE}
+green.coef <- rep(NA,kfolds)
+green.step.rmse_cv <- foreach(fold = 1:kfolds, .combine='c') %do% {
+  step_lm.cv <- stepAIC(lm(yearly_sqft_revenue~.-fold_id,data=filter(data2.green,fold_id!=fold)),direction='both',trace=FALSE)
+  if(length(grep('green_rating',step_lm.cv$call[2])) > 0){
+    green.coef[fold] <- step_lm.cv$coefficients['green_rating']
+  }
+  modelr::rmse(step_lm.cv, data=filter(data2.green, fold_id == fold))
+}
+
+#step-wise AIC (LEED/ES)
+LEED.coef <- rep(NA,kfolds)
+ES.coef <- rep(NA,kfolds)
+interact.coef <- rep(NA,kfolds)
+LEED_ES.step.rmse_cv <- foreach(fold = 1:kfolds, .combine='c') %do% {
+  step_lm.cv <- stepAIC(lm(yearly_sqft_revenue~.+LEED*Energystar-fold_id,data=filter(data2.LEED_ES,fold_id!=fold)),direction='both',trace=FALSE)
+  if(length(grep('LEED',step_lm.cv$call[2])) > 0){
+    LEED.coef[fold] <- step_lm.cv$coefficients['LEED']
+  }
+  if(length(grep('Energystar',step_lm.cv$call[2])) > 0){
+    ES.coef[fold] <- step_lm.cv$coefficients['Energystar']
+  }
+  if(length(grep('LEED:Energystar',step_lm.cv$call[2])) > 0){
+    interact.coef <- step_lm.cv$coefficients['LEED:Energystar']
+  }
+  modelr::rmse(step_lm.cv, data=filter(data2.LEED_ES, fold_id == fold))
+}
+
+#summary statistics
+mean(green.step.rmse_cv)
+mean(LEED_ES.step.rmse_cv)
+green.coef
+LEED.coef
+ES.coef
+interact.coef
+```
+
+From the stepwise AIC with cross-validation, the out-of-sample RMSE is marginally lower than the lasso. Additionally, now there is interpretability behind the affect of the green rating labels with this model. Now, comparing the model that includes both (LEED and Energystar) against just "green rating" (1 if having LEED or Energystar), it can be seen that the values are much closer to the estimated effect of Energystar; this may be caused by the fact that the data set only includes 54 buildings with LEED and 632 with Energystar. So, it would likely be best to focus on the model with both labels as the affect from the two are distinguishable. 
+
+In the model with both the LEED and Energystar labels, the former has a postive effect of about ~$290 and the latter with ~160; both with statistical significance. It is important to note the the stepwise AIC had pruned out the LEED variable in one CV fold, but it is already known that the green labels are not very important in out-of-sample RMSE optimization from the lasso regressions. This is further understanding is further solidified in the fact that the found effects from the green labels only amount to about ~10% of the actual yearly revenue per square foot. 
+
+## Results
+By running models seperately for LEED/Energystar and "green rating", it was found that there is a difference in effect between the LEED and Energystar that should be taken into account. Therefore, the findings will reflect the model with incorporates both rather than the combined label.
+
+In running the lasso regression with cross-validation, the importantance of the green labels with regard to predicting yearly revenue per square foot is actually fairly low. So, instead stepwise AIC was used to measure the affects of each label. We found that the labels only account to about ~10% of the actual yearly revenue per square foot. And, the LEED rating would actually yield a larger bump in yearly revenue per square foot than Energystar. 
+
+## Conclusion
+Armed with the knowledge from the above models, it can be concluded with reasonable certainty that a green rating label is not necessary if one were to invest in a building. However, this data (and therefore the model results) reflects the past social-political climate and feels about green ratings may change over the lifetime of a bulding as they stand for several decades. But having a green rating label at this point in time could result in a minute increase in revenue stream, which may be worth it depending on the cost of obtaining such a label. 
+
+# 3 Predictive model building: California housing
+## Overview 
+Here we wil be building a predictive model for the median market value of all households in a census tract. Our model will be focusing on high out-of-sample predictive performance without the need for interpretability. In addition, the dimensions in the data set are fairly modest, so the random forest algorithm would likely work well here. 
+## Data and Model
+The data must first go through feature processing. In the case of this data set, the features total bedrooms and total bathrooms are odd as they are not quite representative of the the average household in the area. So, they will be scaled by number of households. Additionally, population will also be scaled in the same manner. The data will be more representative of an average household in a particular census tract. This is done as the outcome variable of interest is only within the household scope. 
+```{r data import and processing, echo=FALSE, results=FALSE}
+#load data
+data3 <- read.table('../data/CAhousing.csv',header=TRUE,sep=',')
+
+#feature engineering
+data3 <- data3 %>% 
+  mutate(avg_rooms=totalRooms/households, avg_bedrooms=totalBedrooms/households) %>%
+  mutate(totalRooms=NULL,totalBedrooms=NULL)
+
+data3 <- data3 %>% 
+  mutate(avg_household_size = population/households) %>%
+  mutate(population=NULL)
+```
+First, a simple OLS model was used as the benchmark model to beat (a low bar but still a point to measure relative improvement) with cross validation. Our benchmark model produces a mean CV RMSE of about ~70,000. 
+
+```{r OLS, echo=FALSE, results=FALSE}
+#fold the data
+kfolds = 10
+data3 <- data3 %>%
+  mutate(fold_id = rep(1:kfolds, length=nrow(data3)) %>% sample)
+
+#OLS with CV
+rmse_OLS <- rep(NA,kfolds)
+for(fold in 1:kfolds){
+  CA.OLS = lm(medianHouseValue~.-fold_id,data=filter(data3,fold_id!=fold))
+  rmse_OLS[fold] <- rmse(CA.OLS,filter(data3,fold_id==fold))
+}
+mean(rmse_OLS)
+```
+Compared to the random forest algorithm, which produces an mean CV RMSE of about ~50,000, which is a 30% decrease in mean CV RMSE. As expected, random forest performs noticeably better in predictive capabilities than just simple OLS. 
+```{r RF, echo=FALSE, results=FALSE}
+#random forest with CV
+rmse_forest <- rep(NA,kfolds)
+for(fold in 1:kfolds){
+  CA.rf = randomForest(medianHouseValue~.-fold_id,data=filter(data3,fold_id!=fold))
+  rmse_forest[fold] <- rmse(CA.rf,filter(data3,fold_id==fold))
+}
+mean(rmse_forest)
+CA.rf.final <- randomForest(medianHouseValue~.-fold_id,data=data3)
+predictions <- predict(CA.rf.final,data3)
+```
+
+## Results
+Armed with this model, using the true data, the model's predictions and the residuals, we can assemble plots of the median household market value with respect to the latitude and longitude overlayed on a map. 
+```{r map plots, echo=FALSE, warning=FALSE}
+#get google maps API 
+register_google(key='AIzaSyDxoA2NGmKATRhUI4MP0H46LBUHJUnEWis')
+loc = 'california'
+the_map = get_map(location=loc,source='google',maptype='terrain',crop=FALSE,zoom=6)
+
+#plots
+data3.pred_res <- data3 %>%
+  mutate(pred=predictions) %>%
+  mutate(residual=medianHouseValue-pred) %>%
+  mutate(lres=log(abs(residual)))
+original <- ggmap(the_map) +
+  geom_tile(mapping=aes(x=longitude,y=latitude,fill=medianHouseValue),data=data3) +
+  labs(x='Longitude',y='Latitude',title='Median Household Market Value in California (Data)',fill='Value ($)') +
+  scale_fill_viridis(option='C')
+prediction_plot <- ggmap(the_map) +
+  geom_tile(mapping=aes(x=longitude,y=latitude,fill=pred),data=data3.pred_res) +
+  labs(x='Longitude',y='Latitude',title='Median Household Market Value in California (RF)',fill='Value ($)') +
+  scale_fill_viridis(option='C')
+residual_plot <-  ggmap(the_map) +
+  geom_tile(mapping=aes(x=longitude,y=latitude,fill=lres),data=data3.pred_res) +
+  labs(x='Longitude',y='Latitude',title='Log Residuals of the RF Model',fill='Log Residuals') +
+  scale_fill_viridis(option='C')
+original
+prediction_plot
+residual_plot
+```
+When comparing the plots between the predictions and actual data
+Then looking at the log residuals plot, there appears to be a great deal mixing in the magnitude, which is especially noticable in highly clustered areas. So, while the random forest model has given relatively good out-of-sample performance, there is still a lot of variance not captured. 
+
+## Conclusion
+Using cross-validated mean RMSE as the metric for model predictive performance, random forest was a good model producing better results than simple OLS. However, given the nature of the two models this was the expected outcome. 
