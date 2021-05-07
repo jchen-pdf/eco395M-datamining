@@ -1,0 +1,302 @@
+---
+title: "ECO 395M Exercise 4"
+author: "Jun-Yuan Chen"
+date: "May 7, 2021"
+output: md_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(ggplot2)
+library(tidyverse)
+library(pdp)
+library(LICORS)
+library(foreach)
+library(arules)
+library(arulesViz)
+library(igraph)
+library(tm)
+library(gamlr)
+library(SnowballC)
+library(caret)
+```
+
+# 1 Clustering and PCA
+In this part of the exercise, we will explore how classification methods from machine learning connects to human classification. The data set of interest is one about different wines; what particular chemicals they contain, their color and how they are scored by a human. This leads to two very natural categories which humans use: the color and the scoring. The color is determined by the wine's chemical composition and less open to interpretation while the scoring is very much open to interpretation.
+
+```{r wine data,include=FALSE, message=FALSE}
+#import the data and cut off the human classification
+data1 <- read.table('../data/wine.csv',header=TRUE,sep=',')
+data1.chem <- data1[,1:11]
+```
+
+The first method of classification is principle component analysis. The data set has 11 dimensions (after removing the human classfication columns) and the reduction was done to 2 and 7. 2 was chosen as it would allow for easy visualization to see if the human classifications had indeed appeared, but also explains about 50% of the variation. 7 was chosen as it would be the same number ranks in the scoring system. In reality the scoring system spans from 1-10. However, the actual scores of the wine empirically spans from 3-9.
+
+```{r pca,include=FALSE, message=FALSE}
+# 2 PC for wine color
+pca2.wine_chem <- prcomp(data1.chem,rank=2,scale=TRUE)
+summary(pca2.wine_chem)
+
+data1.chem.pc2 <- cbind(data1[12:13],pca2.wine_chem$x)
+
+# 7 PC for wine quality (on scale of 1-10, but only 3,4,5,6,7,8,9 show up)
+pca7.wine_chem <- prcomp(data1.chem,rank=7,scale=TRUE)
+summary(pca7.wine_chem)
+
+data1.chem.pc7 <- cbind(data1[12:13],pca7.wine_chem$x)
+```
+
+The following plot shows that there is indeed a natural classification of the wine in terms of color with the 2 dimensional PCA. There appears to be more mixing along PC2 but PC1 has a very definitive split between the two. 
+
+```{r pca 2 plot, echo=FALSE,warning=FALSE,message=FALSE}
+#PC2 grouping with color
+ggplot(data=data1.chem.pc2) +
+  geom_point(mapping=aes(x=PC1,y=PC2,col=color)) + 
+  labs(title='PCA of Rank 2')
+```
+
+In the same vein of clustering into to obtain two categories, K-means can also be used to see if color emerges as the natural classification when the number of groups is set to two. From the plot below, it can be seen that the K-means++ classification method has indeed found its way to the wine color (with a few errors). 
+```{r kmean, echo=FALSE, message=FALSE, warning=FALSE}
+#cluster into 2 and 7 groups
+X1 <- scale(data1.chem,center=TRUE,scale=TRUE)
+data1.cluster2 <- cbind(data1,group=(kmeanspp(X1, k=2, nstart=25))$cluster)
+data1.cluster7 <- cbind(data1,group=(kmeanspp(X1, k=7, nstart=25))$cluster)
+
+#clustering into two groups
+ggplot(data=data1.cluster2) +
+  geom_histogram(mapping=aes(x=color,fill=as.factor(group)),stat="count") + 
+  labs(title='K-mean++',fill='K-mean++ Class')
+```
+
+Then to analyze the PCA of rank 7 to see if the scoring classification emerges, K-means++ is used to determine the exact grouping. This is because visualization in seven dimensions is very difficult. The plots show that the clustering algorithms employed do not find the scoring by humans; the histograms show a distribution of all the different groups among each of the scores. 
+
+```{r 7 clustering plots,echo=FALSE,message=FALSE,warning=FALSE}
+#cluster PC=7
+X2 <- scale(data1.chem.pc7[,3:9], center=TRUE, scale=TRUE)
+data1.pc7.cluster <- cbind(data1,group=kmeanspp(X2, k=7, nstart=25)$cluster)
+
+#clusting into seven groups
+ggplot(data=data1.cluster7) +
+  geom_histogram(mapping=aes(x=quality,fill=as.factor(group)),stat="count") + 
+  labs(title='K-mean++ 7 Clusters',fill='K-mean group')
+ggplot(data=data1.pc7.cluster) +
+  geom_histogram(mapping=aes(x=quality,fill=as.factor(group)),stat="count") + 
+  labs(title='K-mean++ 7 Clusters on 7 PCA',fill='K-mean group')
+```
+
+Thus, we find that wine color naturally emerges as a classification when clustering on the chemical composition of the wine, but the human scoring does not. 
+
+# 2 Market segmentation
+Here we want to examine the follower base of "NutrientH20" on Twitter to understand their social media audience. As a preliminary analysis of their audience, the mean of each category can be examined. 
+```{r data, include=FALSE}
+data2 <- read.table('../data/social_marketing.csv',header=TRUE,sep=',')
+```
+
+Then the data needs to be processed. Given that "chatter" and "uncategorized" do not provide much insight into the nature of the audience, these can be cut. 
+
+```{r data processing, include=FALSE}
+data2 <- data2 %>%
+  mutate(chatter=NULL,uncategorized=NULL)
+```
+
+The plot below shows that the on average their followers have tweets most frequently regarding cooking, photo sharing, health nutrition and "chatter". On a human level, this is a fairly reasonable outcome as health nutrition is directly related to the NutrientH20's products of consumer drinks. Furthermore, photo sharing is a popular activity among those in the health product industry. Cooking is tangentially related to health product industry as "healthy cooking" is a key component of that lifestyle. 
+
+```{r mean plot, echo=FALSE}
+data2.sum <- data.frame(mean=sapply(data2[,-c(1)], mean, na.rm=TRUE),name=colnames(data2[,-c(1)]))
+
+ggplot(data=data2.sum) + 
+  geom_bar(mapping=aes(y=name,x=mean),stat='identity')
+```
+
+To better understand the different groups within the social media audience "NutrientH20", we can use K-mean clustering.  Since this is supervised machine learning, the number of groups necessary are not well defined; a balance must be struck between some metric of optimality in K groups and intrpetability by humans. The metric that will be used is a within-cluster sum of squares at each K. 
+
+```{r kmean and SSE,echo=FALSE,message=FALSE,warning=FALSE}
+X <- scale(data2[,-c(1)],center=TRUE,scale=TRUE)
+k_grid <- seq(2, 30, by=1)
+SSE_grid <- foreach(k = k_grid, .combine='c') %do% {
+  cluster_k <- kmeans(X, k, nstart=50)
+  cluster_k$tot.withinss
+}
+plot(SSE_grid)
+```
+
+From this plot, it can be seen that the "elbow" (or level off point in diminishing return) occurs somewhere around K=15. However, examination the difference in 15 seperate groups may prove too be too challenging if a human level understanding needs to be reach. So, K=4 can be chosen as the "elbow" plot shows that within-cluster sum of squares does seem to decrease monotonically which leads to the conclusion that the highest K with human understanding should be chosen. 
+
+```{r kmean is 5 and heatmaps,echo=FALSE}
+data2.clu <- cbind(data2,group=(kmeanspp(X, k=4, nstart=50))$cluster)
+
+data2.clu.vis <- data.frame()
+for(i in 1:length(data2.clu$X)){
+  temp <- data.frame(individual=rep(data2.clu[i,1],length(data2.clu[i,])-2),
+                     group=rep(data2.clu[i,length(data2.clu)],length(data2.clu[i,])-2),
+                     category=colnames(data2.clu[,2:(length(data2.clu[i,])-1)]),
+                     score=unname(t(as.matrix(data2[i,2:(length(data2.clu[i,])-1)]))))
+  data2.clu.vis <- rbind(data2.clu.vis,temp)
+}
+
+for(i in 1:max(data2.clu.vis$group)){
+  print(ggplot(data=data2.clu.vis %>% filter(group==i)) +
+    geom_tile(mapping=aes(x=individual,y=category,fill=score)) +
+    theme(axis.text.x=element_blank()) +
+    labs(title = paste('Group',i))) #+facet_wrap(~group))
+}
+```
+
+From the heatmaps plotted of the scores of each category for each invidiual in a group, the nature of these groups can be discerned. Group 1 has "light" bands across in "health nutrition" and "cooking" so this represents the section of the company's audience that are specifically interested in exactly the marketing around their product. Group 2 has many more light bands such as "sports fandom", "religion", "parenting" and "food" which likely is their more average type of consumer that uses their product and follows them but are not necessarily very invested in the health lifestyle industry.  Group 3 seems to be fairly uniform meaning that it is likely just inividuals who did not fit in the other groups. Group 4 has light bands on "politics" and "news" which are followers who are likely going to be invested in the political stance and ideology of the company as well as its social impact. 
+
+```{r group distribution,echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(data2.clu) +
+  geom_histogram(mapping=aes(x=group)) +
+  labs(title='Group Distribution')
+```
+The histogram of group distribution shows that group 3 is the most popular, which is to be expected as it is the "other" kind of group. Following that is Group 1 which are the ones who care likely care about the healthy lifestyle; this is a group  that the company would probably like to grow as much as possible so targeted marketing campaigns could use this group as a metric for performance. Group 4 is the political group which shows that they represent a non-negligible portion of their following; this means that the marketing team should be concious of political statements or, even, work popular political stances into their advertisements. 
+
+# 3 Association rules for grocery purchases
+For this portion of the exercise, we want to mine for association rules in a data set regarding grocery shopping habits. The data comes in a format requires some processing before being able to run the apriori algorithm. The processing required takes the dataset and coverts it into a list where each entry of the list is the items bought by each individual.  
+
+```{r data import and processing,include=FALSE}
+#import
+data3 <- read.table('../data/groceries.txt',header=FALSE,sep='\n')
+colnames(data3) <- c('product')
+
+#add id
+data3 <- cbind(id=factor(1:length(data3[,1])),data3)
+
+#change data format
+baskets <- data.frame()
+for(i in 1:length(data3[,1])){
+  temp_basket <- strsplit(data3$product[i],',')
+  baskets <- rbind(baskets,data.frame(id=rep(i,length(temp_basket)),product=unlist(temp_basket)))
+}
+data3 <- split(x=baskets$product, f=baskets$id)
+rm(temp_basket,baskets)
+
+#de-dupe
+data3 <- lapply(data3, unique)
+
+#transaction transformation
+data3.trans <- as(data3, "transactions")
+```
+
+After processing, the result can be fed into the apriori algorithm to obtain the association rules. At a cursory inspection of a few of the rules, it can be seen that many rules show that "root vegetables" is associated with many other products. 
+
+```{r association rules,include=FALSE}
+data3.rules <- apriori(data3.trans,parameter=list(support=0.005, confidence=0.1, maxlen=5))
+```
+
+However, a more subset of the rules would easier to understand at a human level. Plots of the confidence, lift and support of each rule give visual cues as to what levels for each to trim by.
+
+```{r confidence, lift and support plot, echo=FALSE,message=FALSE,warning=FALSE}
+plot(data3.rules)
+```
+
+From the plot, a majority of the points with fairly high lift seem to have confidence above 0.35 and support above 0.01; now the rules can be subsetted from this condition. The visualization below is a bit hard to read with the number of rules and crowding of the text, but an overall trend towards "whole milk" can be made out which makes sense at it is a very popular item. Then there  is some interconnections between the  different kinds of vegetables and fruits on the right side. The left side shows that cheeses and bakery items are fairly seperated but both lead into "whole milk". 
+
+```{r visual, echo=FALSE}
+sub1 = subset(data3.rules, subset=confidence > 0.35 & support > 0.01)
+plot(sub1, method='graph')
+```
+# 4 Author attribution
+We have a database of text from 50 different authors and we would like to build an predictive pipline to be able to determine the authorship of a particular text. The data comes pre-split between a training and testing set. Since each author has a separate text file, they will each be imported to an element of a list for ease of use. After importing the data, it is passed into a corpus where it is removed of white space, punctuation and and numbers. However, at this stage, certain words that carry no information regarding who the author is will also be striped, such as articles. 
+
+```{r import authorship data,include=FALSE}
+#reader  function
+readerPlain <- function(fname){
+  readPlain(elem=list(content=readLines(fname)), 
+            id=fname, language='en') }
+
+#import training directories
+train_dirs <- Sys.glob('../data/ReutersC50/C50train/*')
+file_list <- NULL
+labels_train <- NULL
+for(author in train_dirs) {
+  author_name <- substring(author, first=29)
+  files_to_add <- Sys.glob(paste0(author, '/*.txt'))
+  file_list <- append(file_list, files_to_add)
+  labels_train <- append(labels_train, rep(author_name, length(files_to_add)))
+}
+corpus_train <- Corpus(DirSource(train_dirs)) 
+corpus_train <- corpus_train %>% tm_map(.,content_transformer(tolower)) %>% 
+  tm_map(.,content_transformer(removeNumbers)) %>% 
+  tm_map(.,content_transformer(removeNumbers)) %>% 
+  tm_map(.,content_transformer(removePunctuation)) %>%
+  tm_map(.,content_transformer(stripWhitespace)) %>%
+  tm_map(.,content_transformer(removeWords), stopwords("SMART"))
+
+#import testing directories
+test_dirs <- Sys.glob('../data/ReutersC50/C50test/*')
+file_list <- NULL
+labels_test = NULL
+for(author in test_dirs) {
+  author_name = substring(author, first=28)
+  files_to_add = Sys.glob(paste0(author, '/*.txt'))
+  file_list = append(file_list, files_to_add)
+  labels_test = append(labels_test, rep(author_name, length(files_to_add)))
+}
+corpus_test <- Corpus(DirSource(test_dirs)) 
+corpus_test <- corpus_test %>% tm_map(.,content_transformer(tolower)) %>% 
+  tm_map(.,content_transformer(removeNumbers)) %>% 
+  tm_map(.,content_transformer(removePunctuation)) %>%
+  tm_map(.,content_transformer(stripWhitespace)) %>%
+  tm_map(.,content_transformer(removeWords), stopwords("SMART")) 
+```
+
+Once the data is in a corpus it can be transformed into a document term matrix which is a sparse matrix that can be fed into traditional machine learning algorithms. The testing matrix will also be limited to only words that appear in the training set as not to confuse the algorithms with unseen words. 
+
+```{r dtm, include=FALSE}
+# create training and testing feature matrices
+DTM_train <- DocumentTermMatrix(corpus_train)
+DTM_test <- DocumentTermMatrix(corpus_test,control=list(dictionary=Terms(DTM_train)))
+```
+
+As a classification problem, the implementation of logit regression would be appropriate along with lasso with the high dimensionality of the dataset. Given that there are 50 authors and that there is no reason to expect predictive performance to be uniform across them, the model can evaluated across all of them to ascertain performance. 
+
+```{r lasso logit model, include=FALSE}
+# list of outcome vectors
+y_train <- vector(mode='list',length(levels(factor(labels_train))))
+y_test <- vector(mode='list',length(levels(factor(labels_test))))
+for(i in 1:length(levels(factor(labels_train)))){
+  y_train[[i]] <- 0 + {labels_train==labels_train[i]}
+  y_test[[i]] <- 0 + {labels_test==labels_train[i]}
+}
+
+#list of logit model
+logit <- vector(mode='list',length(y_train))
+yhat_test <- vector(mode='list',length(y_test))
+for(i in 1:length(y_train)){
+  logit[[i]] <- cv.gamlr(DTM_train, y_train[[i]], family='binomial', nfold=10)
+  yhat_test[[i]] <- predict(logit[[i]], DTM_test, type='response')
+}
+
+#logit model results
+threshold <-  0.5
+confusion <- vector(mode="list",length(yhat_test))
+for(i in 1:length(confusion)){
+  confusion[[i]] <- confusionMatrix(factor({yhat_test[[i]]>threshold}+0),factor(y_test[[i]]))
+}
+```
+
+To gain an insight into the predictive performance of the model, the plots below show the accuracy (obtained via a confusion matrix) of the model out-of-sample. These plots show that there is a fairly high accuracy with a mean of about ~90% across all the different authors.
+
+```{r logit plots,echo=FALSE}
+#logit model viz
+true_pos <- rep(NA,length(confusion)); true_neg <- rep(NA,length(confusion))
+false_pos <- rep(NA,length(confusion)); false_neg <- rep(NA,length(confusion))
+accuracy <- rep(NA,length(confusion)); sense <- rep(NA,length(confusion))
+for(i in 1:length(confusion)){
+  true_pos[i] <- confusion[[i]]$table[2,2]
+  true_neg[i] <- confusion[[i]]$table[1,2]
+  false_pos[i] <- confusion[[i]]$table[2,1]
+  false_neg[i] <- confusion[[i]]$table[1,1]
+  accuracy[i] <- confusion[[i]]$overall[1]
+  sense[i] <- confusion[[i]]$byClass[1]
+}
+logit.results <- data.frame(author=levels(factor(labels_test)),
+                            true_pos,true_neg,false_pos,false_neg,
+                            accuracy,sense)
+
+ggplot(data=logit.results) +
+  geom_bar(mapping=aes(x=accuracy,y=author),stat='identity')
+```
