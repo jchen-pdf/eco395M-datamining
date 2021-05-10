@@ -1,0 +1,161 @@
+---
+title: "ECO395M - Final Project"
+author: "Jun-Yuan Chen"
+date: "May 10, 2021"
+output: md_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load packages
+library(tidyverse)
+library(fastDummies)
+library(gamlr)
+library(caTools)
+library(caret)
+library(randomForest)
+```
+
+# Introduction
+Given the the financial capital and public interest surrounding competitives sports and games, the predictive ability regarding the outcome is an incredibly attractive endeavor worth pursuing. And so, of course, we choose to construct a predictive model for the most popular competitve sport: chess. Chess presents intself as a much simpler game than most others given its turn based nature along with the fact that it is an individuals game. 
+
+# Data
+```{r data import,include=FALSE}
+#chess games (https://www.kaggle.com/datasnaek/chess)
+#opening codes (https://www.365chess.com/eco.php)
+chess <- read.table('../data/games.csv',sep=',',header=TRUE,fill=TRUE,quote='',comment.char='')
+```
+
+To build a predictive model of chess outcomes, we will use a data set from kaggle that contains over 20,000 online chess matches (https://www.kaggle.com/datasnaek/chess). The data set contain 16 variables, but we will not be using all of them to build our model. Firstly, each game is given a unique identifying alphanumeric string that can be removed as it does not provide any information regarding the outcome. There are additional variables which also do not provide any information about the outcome of the game; the game start and end variables are not sensitive enough to be distinguishable so the total game time cannot be retrieved. Futhermore, the "moves" variable will also be eliminated as the aim to predict the outcome of the game before it begins; using the "moves" variable also leans more towards just building an algorithm to play chess rather than prediction of outcome between players. The identifying names of the players are also dropped to be able to predict for unidentified players. 
+
+For the remaining features, there is some pre-processing to be done for both the the lasso logit model and random forest that will be used. The increment codes are in the form of an integer "+" an integer in a string, so it can be seperated into two variables of the increment integers and treated as a continuous variable. The "opening_name" variable contains the opening each game but will be dropped in favor of  the "opening_eco" variable which categorizes the openings in codes; this "opening_eco" variable is then made into a dummy variable (with over 300 different outcomes) and one removed option as the baseline (A00). The outcome variable for the a binary logit model must be in 0 or 1 so the winner variable is changed as outcome "white" is one and "black"/"draw" is zero. White is actually favored more than black in winning (likely due to having the first move) as seen below, so when "black"/"draw" are categorized into zero the binary outcomes are roughly 50-50.
+
+```{r data processing and import,include=FALSE}
+#drop columns
+chess <- chess %>%
+  mutate(id=NULL,white_id=NULL,black_id=NULL, #no information
+         created_at=NULL,last_move_at=NULL, #times are not sensitive enough
+         moves=NULL, #moves have too many  dimensions
+         opening_name=NULL) #already have opening codes
+
+####LOGIT####
+#dummy
+chess.dum <- dummy_cols(chess,select_columns=c('victory_status','opening_eco'),remove_first_dummy=TRUE)
+chess.dum <- chess.dum %>%
+  mutate(opening_eco=NULL,victory_status=NULL)
+
+#winner to binary (or factor)
+chess.dum$winner <- as.factor(chess.dum$winner)
+chess.dum$winner <- ifelse(chess.dum$winner=='white',1,0)
+
+#rated into numerics
+chess.dum$rated <- as.integer(as.logical(chess.dum$rated))
+
+#increment
+in1 <- rep(NA,length(chess.dum$increment_code))
+in2 <- rep(NA,length(chess.dum$increment_code))
+for(i in 1:length(chess.dum$increment_code)){
+  in1[i] <- strtoi(strsplit(chess.dum$increment_code[i],"[+]")[[1]][1])
+  in2[i] <- strtoi(strsplit(chess.dum$increment_code[i],"[+]")[[1]][2])
+}
+chess.dum <- chess.dum %>% mutate(increment1=in1,increment2=in2,increment_code=NULL)
+rm(in1,in2)
+```
+
+```{r prelim plots,echo=FALSE}
+ggplot(data=chess) +
+  geom_bar(mapping=aes(x=winner)) +
+  labs(title='Outcomes in 20,0058 Games')
+ggplot(data=chess.dum) +
+  geom_bar(mapping=aes(x=winner)) +
+  labs(title='Outcomes in 20,0058 Games (Binary)')
+
+```
+
+Random forest can handle categorical variables without explicitly using dummy variables. This is a behavior present in the algorithm in randomForest package in R but can only handle categorical variables with up to 53 levels. The "opening_eco" variable has over 300 levels which cannot be processed by the function, so we will drop this variable (more reasoning will be provided later). The outcome variable winner can be left as "white", "black"," and "draw". 
+
+# Logit Lasso Model
+Given the large number of variable after coverting the categorical variables to dummy variables, a lasso model would be appropriate for feature selection. Then it can be combined with a logit model to predict the binary winner outcome variable. To train the model, a 70-30 train test split is used on the original data set. Furthermore, the model is trained with cross-validation to improve out-of-sample predictive performance and avoid overfitting. 
+
+The model itself will also include interaction terms from the white player's rating and the black player's rating with each other term. The ratings act as the individual's propensity score towards winning and would make sense that individual skill will have some effect on how openings play out and especially with mismatched skill across the two players. 
+
+```{r lasso logit model, include=FALSE}
+#train/test split
+sample <- sample.split(chess.dum,SplitRatio = 0.7)
+chess.dum.train <- subset(chess.dum,sample==TRUE)
+chess.dum.test <- subset(chess.dum,sample==FALSE)
+
+#logit model
+x <- model.matrix(~.+.*white_rating+.*black_rating,data=chess.dum.train %>% mutate(winner=NULL))
+y <- chess.dum.train$winner
+chess.logit <- cv.gamlr(x,y,family='binomial',nfold=10)
+```
+
+As the outcome is discrete, a confusion matrix will be the first step in assessing the predictive performance of the model. The accuracy metric will be the measure of performance as this is a very balanced outcome variable in the binary form prescribed. Given that the logit model predicts with a continious outcome variable of the probability of white winning in this case, a threshold will need to be set of what likelihood constitutes as a prediction in the positive. 
+
+```{r logit model,echo=FALSE}
+#logit confusion matrix and accuracy curve
+chess.logit.predict <- predict(chess.logit,model.matrix(~.+.*white_rating+.*black_rating,
+                                                        data=chess.dum.test %>% mutate(winner=NULL)),type='response')
+
+thresholds <- seq(0.1,0.9,0.005)
+accuracy <- rep(NA,length(thresholds))
+for(i in 1:length(accuracy)){
+  accuracy[i] <- confusionMatrix(factor({chess.logit.predict>thresholds[i]}+0),
+                                 factor(chess.dum.test$winner))$overall[1]
+}
+plot(data.frame(thresholds,accuracy))
+data.frame(thresholds,accuracy)[which(max(accuracy)==accuracy),]
+```
+
+With proper threshold setting of around a confidence of 50%, the lasso logit model is able to achieve an accuracy of about 67%. This about 17% over the incident rate (which will act as the baseline) which is indeed an improvement. However, next is the question is if random forest can beat that out-of-sample predictive performance.
+
+# Random Forest
+Random forest works well with a modest number of predictor variables with the 9 (excluding the outcome variable) in the data set, this algorithm would appear to be good choice. However, as stated before, the "opening_eco" variable has over 300 levels which is way too many for the random forest function to handle; the lasso logit regression has also shown that many of the dummy variables from the "opening_eco" variable are zero. Thus, dropping the column entirely should not have marked effect in performance.
+
+```{r rf data processing,include=FALSE}
+#factors
+chess.fac <- chess %>% 
+  mutate(winner=as.factor(winner),rated=as.factor(rated),victory_status=as.factor(victory_status),opening_eco=NULL) 
+
+#increment
+in1 <- rep(NA,length(chess.fac$increment_code))
+in2 <- rep(NA,length(chess.fac$increment_code))
+for(i in 1:length(chess.fac$increment_code)){
+  in1[i] <- strtoi(strsplit(chess.fac$increment_code[i],"[+]")[[1]][1])
+  in2[i] <- strtoi(strsplit(chess.fac$increment_code[i],"[+]")[[1]][2])
+}
+chess.fac <- chess.fac %>% mutate(increment1=in1,increment2=in2,increment_code=NULL)
+rm(in1,in2)
+
+```
+
+```{r rf model,echo=FALSE}
+#train/test split
+sample <- sample.split(chess.fac,SplitRatio = 0.7)
+chess.fac.train <- subset(chess.fac,sample==TRUE)
+chess.fac.test <- subset(chess.fac,sample==FALSE)
+
+#rf model
+chess.rf <- randomForest(winner~.,data=chess.fac.train)
+
+#rf accuracy
+confusionMatrix(predict(chess.rf,newdata=chess.fac.test),chess.fac.test$winner)
+```
+
+The random forest also performs with an accuracy of roughly 67%. But in addition to the relatively similar performance,  the random forest also predicts the categorical variables of the outcome: "white", "draw", "black". 
+
+# Results
+Given that random forest is a good predictive algorithm without too many adjustment to the parameters, the predictive ability can be use as an upperbound to the lasso logit model. Since the performance of both are roughly the same, it can be said that the lasso logit model using rating interactions works to a fair degree in terms of prediction. Additionally, the lasso logit model has feature selection and better interpretability of the covariates.  
+
+From examination of the coefficients, the effect of almost all of the opening dummy variables are zero. The "rated" status and "victory_status" of the game also have no effect. The ratings of each player does have a noticable effect. And given that the outcome variable is 1 if white wins, the model shows that the coefficient on "white_rating" is positive and the coefficient "black_rating" is negative; this makes sense on a human level as a higher rating mean increased skill. From closer inspection of the two coefficent it can be see that they are roughly the same (~0.002), But, the "black_rating" coefficient is slightly lower than the "white_rating" coefficient. This would seem to make sense as a player with higher skill level could leverage the white first mover advantage better than the black position. However, this can also be statistical noise. 
+
+A slightly more surprising result is that interacting the rating of the white player with the rating of the black player yields a coefficient of zero under the lasso. One would normally expect that there should be some form of effect of of having a difference between the skill levels. Although, there are a few opening which when interacted with the ratings, yield non-zero coefficients, so it would appear that certain openings are, on average, better than others depending on the skill of the individual and also some that actually lower the chances of winning. 
+
+# Conclusion
+From a data set on  ~20,000 online chess matches, a predictive model of the outcome with 67% accuracy was built using a lasso logit algorithm as well as random forest as a benchmark. Both models were able to beat the incident rate (~50%) by a noticable margin. However, with the random forest model acting as a benchmark for the accuracy to aim for, interaction effects from the individual player ratings with all other variables were added into the lasso logit model. This allowed the lasso logit model to bring up its accuracy to the same level as the random forest. 
+
+With the predictive performance equal between the two models, the lasso logit regression model can be turned to for interpretation of the variables on the outcome. It seems that the ratings plays a great deal of influence on the the outcomeo of the chess game both just in themselves and how they interact with certain openings. This effect could be interpreted as certain opening are more effective with higher skill levels or require a level of skill to be used correctly. 
+
+By avoiding using the particular moves in the game, it allows the model to be used preceding the games with a control of openings rather than requiring the game to begin. While this lacking this information in the model most assuredly is a detriment to the accuracy, it serves better to predicting games that are not in the middle of play. 
